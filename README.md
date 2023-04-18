@@ -17,7 +17,7 @@ cd gptj.cpp
 mkdir build
 cd build
 cmake ..
-cmake --build .
+cmake --build . --config Release
 ```
 
 On Linux, the generated `.so` files will be located at:
@@ -30,8 +30,8 @@ build/ggml/src/libggml.so
 On Windows, the generated `.dll` files will be located at:
 
 ```
-build\bin\Debug\gptj.dll
-build\bin\Debug\ggml.dll
+build\bin\Release\gptj.dll
+build\bin\Release\ggml.dll
 ```
 
 ## License
