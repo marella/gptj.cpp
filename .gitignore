@@ -1,4 +1,5 @@
 build
+tmp
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++,cmake,linux,macos,windows,sublimetext,vim,visualstudio,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,cmake,linux,macos,windows,sublimetext,vim,visualstudio,visualstudiocode
@@ -16,11 +17,6 @@ build
 # Precompiled Headers
 *.gch
 *.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
 
 # Fortran module files
 *.mod

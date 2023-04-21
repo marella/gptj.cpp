@@ -1,0 +1,73 @@
+name: build
+on:
+  - push
+  - workflow_dispatch
+
+jobs:
+  build:
+    # Don't run when changes are being pushed from GitHub Actions to prevent endless recursion.
+    if: ${{ !(github.event_name == 'push' && github.event.head_commit.author.name == 'github-actions[bot]') }}
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-20.04
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          mkdir build tmp
+          cd build
+          cmake ..
+          cmake --build . --config Release
+
+      - if: startsWith(runner.os, 'Linux')
+        run: |
+          cp build/src/libgptj.so tmp
+          cp build/ggml/src/libggml.so tmp
+
+      - if: startsWith(runner.os, 'macOS')
+        run: |
+          cp build/src/libgptj.dylib tmp
+          cp build/ggml/src/libggml.dylib tmp
+
+      - if: startsWith(runner.os, 'Windows')
+        run: |
+          cp build\bin\Release\gptj.dll tmp
+          cp build\bin\Release\ggml.dll tmp
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: libraries
+          path: tmp
+          if-no-files-found: error
+
+  finish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: libraries
+          path: lib
+
+      - uses: git-actions/set-user@v1
+
+      - name: Save
+        run: |
+          git add lib
+          git commit -m 'Auto Build'
+          git push
