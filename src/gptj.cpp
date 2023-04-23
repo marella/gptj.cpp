@@ -847,7 +847,10 @@ extern "C"
     delete ctx;
   }
 
-  bool gptj_generate(gptj_model_context *model_ctx, const char *prompt, gptj_params params, char *response)
+  bool gptj_generate(gptj_model_context *model_ctx,
+                     const char *prompt,
+                     gptj_params params,
+                     bool (*callback)(const char *token))
   {
     if (params.seed < 0)
     {
@@ -878,7 +881,7 @@ extern "C"
     size_t mem_per_token = 0;
     gptj_eval(model, params.n_threads, 0, {0, 1, 2, 3}, logits, mem_per_token);
 
-    std::string result;
+    bool processing_input = true;
     for (int i = embd.size(); i < embd_inp.size() + params.n_predict; i++)
     {
       // predict
@@ -896,6 +899,7 @@ extern "C"
 
       if (i >= embd_inp.size())
       {
+        processing_input = false;
         // sample next token
         const int top_k = params.top_k;
         const float top_p = params.top_p;
@@ -926,12 +930,14 @@ extern "C"
         i += embd.size() - 1;
       }
 
-      // display text
-      for (auto id : embd)
+      if (!processing_input)
       {
-        if (id != /* end of text token */ 50256)
+        for (auto id : embd)
         {
-          result.append(vocab.id_to_token[id]);
+          if (id == /* end of text token */ 50256 || !(*callback)(vocab.id_to_token[id].c_str()))
+          {
+            return true;
+          }
         }
       }
 
@@ -942,8 +948,12 @@ extern "C"
       }
     }
 
-    std::strcpy(response, result.c_str());
     return true;
+  }
+
+  int gptj_num_tokens(gptj_model_context *model_ctx, const char *prompt)
+  {
+    return gpt_tokenize(model_ctx->vocab, prompt).size();
   }
 
 #ifdef __cplusplus
