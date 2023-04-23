@@ -191,12 +191,6 @@ extern "C"
       }
     }
 
-    // printf("\n");
-    // for (int i = 0; i < (int) probs.size(); i++) {
-    //     printf("%d: '%s' %f\n", i, vocab.id_to_token.at(logits_id[i].second).c_str(), probs[i]);
-    // }
-    // exit(0);
-
     std::discrete_distribution<> dist(probs.begin(), probs.end());
     int idx = dist(rng);
 
@@ -267,8 +261,6 @@ extern "C"
   // load the model's weights from a file
   bool gptj_model_load(const std::string &fname, gptj_model &model, gpt_vocab &vocab)
   {
-    printf("%s: loading model from '%s' - please wait ...\n", __func__, fname.c_str());
-
     auto fin = std::ifstream(fname, std::ios::binary);
     if (!fin)
     {
@@ -298,14 +290,6 @@ extern "C"
       fin.read((char *)&hparams.n_layer, sizeof(hparams.n_layer));
       fin.read((char *)&hparams.n_rot, sizeof(hparams.n_rot));
       fin.read((char *)&hparams.f16, sizeof(hparams.f16));
-
-      printf("%s: n_vocab = %d\n", __func__, hparams.n_vocab);
-      printf("%s: n_ctx   = %d\n", __func__, hparams.n_ctx);
-      printf("%s: n_embd  = %d\n", __func__, hparams.n_embd);
-      printf("%s: n_head  = %d\n", __func__, hparams.n_head);
-      printf("%s: n_layer = %d\n", __func__, hparams.n_layer);
-      printf("%s: n_rot   = %d\n", __func__, hparams.n_rot);
-      printf("%s: f16     = %d\n", __func__, hparams.f16);
     }
 
     // load vocab
@@ -400,8 +384,6 @@ extern "C"
       ctx_size += n_ctx * n_layer * n_embd * ggml_type_sizef(GGML_TYPE_F32); // memory_v
 
       ctx_size += (5 + 10 * n_layer) * 256; // object overhead
-
-      printf("%s: ggml ctx size = %6.2f MB\n", __func__, ctx_size / (1024.0 * 1024.0));
     }
 
     // create the ggml context
@@ -499,16 +481,12 @@ extern "C"
       model.memory_v = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
 
       const size_t memory_size = ggml_nbytes(model.memory_k) + ggml_nbytes(model.memory_v);
-
-      printf("%s: memory_size = %8.2f MB, n_mem = %d\n", __func__, memory_size / 1024.0 / 1024.0, n_mem);
     }
 
     // load weights
     {
       int n_tensors = 0;
       size_t total_size = 0;
-
-      printf("%s: ", __func__);
 
       while (true)
       {
@@ -556,17 +534,6 @@ extern "C"
           return false;
         }
 
-        if (0)
-        {
-          static const char *ftype_str[] = {
-              "f32",
-              "f16",
-              "q4_0",
-              "q4_1",
-          };
-          printf("%24s - [%5d, %5d], type = %6s, %6.2f MB, %9zu bytes\n", name.data(), ne[0], ne[1], ftype_str[ftype], ggml_nbytes(tensor) / 1024.0 / 1024.0, ggml_nbytes(tensor));
-        }
-
         size_t bpe = 0;
 
         switch (ftype)
@@ -601,18 +568,8 @@ extern "C"
 
         fin.read(reinterpret_cast<char *>(tensor->data), ggml_nbytes(tensor));
 
-        // printf("%42s - [%5d, %5d], type = %6s, %6.2f MB\n", name.data(), ne[0], ne[1], ftype == 0 ? "float" : "f16", ggml_nbytes(tensor)/1024.0/1024.0);
         total_size += ggml_nbytes(tensor);
-        if (++n_tensors % 8 == 0)
-        {
-          printf(".");
-          fflush(stdout);
-        }
       }
-
-      printf(" done\n");
-
-      printf("%s: model size = %8.2f MB / num tensors = %d\n", __func__, total_size / 1024.0 / 1024.0, n_tensors);
     }
 
     fin.close();
@@ -657,7 +614,6 @@ extern "C"
     if (mem_per_token > 0 && mem_per_token * N > buf_size)
     {
       const size_t buf_size_new = 1.1 * (mem_per_token * N); // add 10% to account for ggml object overhead
-      // printf("\n%s: reallocating buffer from %zu to %zu bytes\n", __func__, buf_size, buf_size_new);
 
       // reallocate
       buf_size = buf_size_new;
@@ -858,7 +814,6 @@ extern "C"
     {
       mem_per_token = ggml_used_mem(ctx0) / N;
     }
-    // printf("used_mem = %zu\n", ggml_used_mem(ctx0));
 
     ggml_free(ctx0);
 
@@ -881,7 +836,6 @@ extern "C"
     if (!gptj_model_load(filename, ctx->model, ctx->vocab))
     {
       delete ctx;
-      fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, filename);
       return nullptr;
     }
     return ctx;
@@ -904,8 +858,6 @@ extern "C"
       params.n_threads = std::min(4, (int32_t)std::thread::hardware_concurrency());
     }
 
-    printf("%s: seed = %d\n", __func__, params.seed);
-
     std::mt19937 rng(params.seed);
 
     gpt_vocab &vocab = model_ctx->vocab;
@@ -919,9 +871,6 @@ extern "C"
     std::vector<gpt_vocab::id> embd_inp = ::gpt_tokenize(vocab, prompt);
 
     params.n_predict = std::min(params.n_predict, model.hparams.n_ctx - (int)embd_inp.size());
-
-    printf("%s: number of tokens in prompt = %zu\n", __func__, embd_inp.size());
-    printf("\n");
 
     std::vector<gpt_vocab::id> embd;
 
@@ -937,7 +886,7 @@ extern "C"
       {
         if (!gptj_eval(model, params.n_threads, n_past, embd, logits, mem_per_token))
         {
-          printf("Failed to predict\n");
+          fprintf(stderr, "%s: failed to predict\n", __func__);
           return false;
         }
       }
@@ -980,13 +929,11 @@ extern "C"
       // display text
       for (auto id : embd)
       {
-        printf("%s", vocab.id_to_token[id].c_str());
         if (id != /* end of text token */ 50256)
         {
           result.append(vocab.id_to_token[id]);
         }
       }
-      fflush(stdout);
 
       // end of text token
       if (embd.back() == 50256)

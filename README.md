@@ -1,4 +1,4 @@
-# gptj.cpp
+# gptj.cpp [![build](https://github.com/marella/gptj.cpp/actions/workflows/build.yml/badge.svg)](https://github.com/marella/gptj.cpp/actions/workflows/build.yml)
 
 Port of [GPT-J](https://en.wikipedia.org/wiki/GPT-J) model in C/C++. Adapted from [ggerganov/ggml/examples](https://github.com/ggerganov/ggml/tree/master/examples).
 
