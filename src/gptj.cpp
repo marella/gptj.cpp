@@ -197,6 +197,71 @@ extern "C"
     return logits_id[idx].second;
   }
 
+  // model file types
+  enum ggml_ftype
+  {
+    GGML_FTYPE_UNKNOWN = -1,
+    GGML_FTYPE_ALL_F32 = 0,
+    GGML_FTYPE_MOSTLY_F16 = 1,           // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q4_0 = 2,          // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q4_1 = 3,          // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q4_1_SOME_F16 = 4, // tok_embeddings.weight and output.weight are F16
+    GGML_FTYPE_MOSTLY_Q4_2 = 5,          // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q4_3 = 6,          // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q8_0 = 7,          // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q5_0 = 8,          // except 1d tensors
+    GGML_FTYPE_MOSTLY_Q5_1 = 9,          // except 1d tensors
+  };
+
+  enum ggml_type ggml_ftype_to_ggml_type(const enum ggml_ftype ftype)
+  {
+    ggml_type wtype = GGML_TYPE_COUNT;
+
+    switch (ftype)
+    {
+    case GGML_FTYPE_ALL_F32:
+      wtype = GGML_TYPE_F32;
+      break;
+    case GGML_FTYPE_MOSTLY_F16:
+      wtype = GGML_TYPE_F16;
+      break;
+    case GGML_FTYPE_MOSTLY_Q4_0:
+      wtype = GGML_TYPE_Q4_0;
+      break;
+    case GGML_FTYPE_MOSTLY_Q4_1:
+      wtype = GGML_TYPE_Q4_1;
+      break;
+    case GGML_FTYPE_MOSTLY_Q4_2:
+      wtype = GGML_TYPE_Q4_2;
+      break;
+    case GGML_FTYPE_MOSTLY_Q4_3:
+      wtype = GGML_TYPE_Q4_3;
+      break;
+    case GGML_FTYPE_MOSTLY_Q5_0:
+      wtype = GGML_TYPE_Q5_0;
+      break;
+    case GGML_FTYPE_MOSTLY_Q5_1:
+      wtype = GGML_TYPE_Q5_1;
+      break;
+    case GGML_FTYPE_MOSTLY_Q8_0:
+      wtype = GGML_TYPE_Q8_0;
+      break;
+    case GGML_FTYPE_UNKNOWN:
+      wtype = GGML_TYPE_COUNT;
+      break;
+    case GGML_FTYPE_MOSTLY_Q4_1_SOME_F16:
+      wtype = GGML_TYPE_COUNT;
+      break;
+    }
+
+    if (wtype == GGML_TYPE_COUNT)
+    {
+      fprintf(stderr, "%s: invalid model type %d\n", __func__, ftype);
+    }
+
+    return wtype;
+  }
+
   /**
    * GPT-J
    */
@@ -210,7 +275,7 @@ extern "C"
     int32_t n_head = 16;
     int32_t n_layer = 28;
     int32_t n_rot = 64;
-    int32_t f16 = 1;
+    int32_t ftype = 1;
   };
 
   struct gptj_layer
@@ -289,7 +354,7 @@ extern "C"
       fin.read((char *)&hparams.n_head, sizeof(hparams.n_head));
       fin.read((char *)&hparams.n_layer, sizeof(hparams.n_layer));
       fin.read((char *)&hparams.n_rot, sizeof(hparams.n_rot));
-      fin.read((char *)&hparams.f16, sizeof(hparams.f16));
+      fin.read((char *)&hparams.ftype, sizeof(hparams.ftype));
     }
 
     // load vocab
@@ -320,30 +385,13 @@ extern "C"
 
     // for the big tensors, we have the option to store the data in 16-bit floats or quantized
     // in order to save memory and also to speed up the computation
-    ggml_type wtype = GGML_TYPE_COUNT;
-    switch (model.hparams.f16)
+    ggml_type wtype = ggml_ftype_to_ggml_type((ggml_ftype)(model.hparams.ftype));
+    if (wtype == GGML_TYPE_COUNT)
     {
-    case 0:
-      wtype = GGML_TYPE_F32;
-      break;
-    case 1:
-      wtype = GGML_TYPE_F16;
-      break;
-    case 2:
-      wtype = GGML_TYPE_Q4_0;
-      break;
-    case 3:
-      wtype = GGML_TYPE_Q4_1;
-      break;
-    default:
-    {
-      fprintf(stderr, "%s: invalid model file '%s' (bad f16 value %d)\n",
-              __func__, fname.c_str(), model.hparams.f16);
+      fprintf(stderr, "%s: invalid model file '%s' (bad ftype value %d)\n",
+              __func__, fname.c_str(), model.hparams.ftype);
       return false;
     }
-    }
-
-    const ggml_type wtype2 = GGML_TYPE_F32;
 
     auto &ctx = model.ctx;
 
@@ -380,8 +428,8 @@ extern "C"
       ctx_size += n_layer * (4 * n_embd * n_embd * ggml_type_sizef(wtype)); // c_mlp_proj_w
       ctx_size += n_layer * (n_embd * ggml_type_sizef(GGML_TYPE_F32));      // c_mlp_proj_b
 
-      ctx_size += n_ctx * n_layer * n_embd * ggml_type_sizef(GGML_TYPE_F32); // memory_k
-      ctx_size += n_ctx * n_layer * n_embd * ggml_type_sizef(GGML_TYPE_F32); // memory_v
+      ctx_size += n_ctx * n_layer * n_embd * ggml_type_sizef(GGML_TYPE_F16); // memory_k
+      ctx_size += n_ctx * n_layer * n_embd * ggml_type_sizef(GGML_TYPE_F16); // memory_v
 
       ctx_size += (5 + 10 * n_layer) * 256; // object overhead
     }
@@ -389,8 +437,9 @@ extern "C"
     // create the ggml context
     {
       struct ggml_init_params params = {
-          /* .mem_size = */ ctx_size,
-          /* .mem_buffer = */ NULL,
+          .mem_size = ctx_size,
+          .mem_buffer = NULL,
+          .no_alloc = false,
       };
 
       model.ctx = ggml_init(params);
@@ -477,8 +526,8 @@ extern "C"
       const int n_mem = n_layer * n_ctx;
       const int n_elements = n_embd * n_mem;
 
-      model.memory_k = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
-      model.memory_v = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_elements);
+      model.memory_k = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, n_elements);
+      model.memory_v = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, n_elements);
 
       const size_t memory_size = ggml_nbytes(model.memory_k) + ggml_nbytes(model.memory_v);
     }
@@ -492,11 +541,11 @@ extern "C"
       {
         int32_t n_dims;
         int32_t length;
-        int32_t ftype;
+        int32_t ttype;
 
         fin.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
         fin.read(reinterpret_cast<char *>(&length), sizeof(length));
-        fin.read(reinterpret_cast<char *>(&ftype), sizeof(ftype));
+        fin.read(reinterpret_cast<char *>(&ttype), sizeof(ttype));
 
         if (fin.eof())
         {
@@ -530,34 +579,11 @@ extern "C"
         if (tensor->ne[0] != ne[0] || tensor->ne[1] != ne[1])
         {
           fprintf(stderr, "%s: tensor '%s' has wrong shape in model file: got [%d, %d], expected [%d, %d]\n",
-                  __func__, name.data(), tensor->ne[0], tensor->ne[1], ne[0], ne[1]);
+                  __func__, name.data(), (int)tensor->ne[0], (int)tensor->ne[1], ne[0], ne[1]);
           return false;
         }
 
-        size_t bpe = 0;
-
-        switch (ftype)
-        {
-        case 0:
-          bpe = ggml_type_size(GGML_TYPE_F32);
-          break;
-        case 1:
-          bpe = ggml_type_size(GGML_TYPE_F16);
-          break;
-        case 2:
-          bpe = ggml_type_size(GGML_TYPE_Q4_0);
-          assert(ne[0] % 64 == 0);
-          break;
-        case 3:
-          bpe = ggml_type_size(GGML_TYPE_Q4_1);
-          assert(ne[0] % 64 == 0);
-          break;
-        default:
-        {
-          fprintf(stderr, "%s: unknown ftype %d in model file\n", __func__, ftype);
-          return false;
-        }
-        };
+        const size_t bpe = ggml_type_size(ggml_type(ttype));
 
         if ((nelements * bpe) / ggml_blck_size(tensor->type) != ggml_nbytes(tensor))
         {
@@ -626,8 +652,9 @@ extern "C"
     }
 
     struct ggml_init_params params = {
-        /* .mem_size = */ buf_size,
-        /* .mem_buffer = */ buf,
+        .mem_size = buf_size,
+        .mem_buffer = buf,
+        .no_alloc = false,
     };
 
     struct ggml_context *ctx0 = ggml_init(params);
@@ -659,15 +686,17 @@ extern "C"
 
       // self-attention
       {
-        struct ggml_tensor *Qcur = ggml_mul_mat(ctx0, model.layers[il].c_attn_q_proj_w, cur);
-        struct ggml_tensor *Kcur = ggml_mul_mat(ctx0, model.layers[il].c_attn_k_proj_w, cur);
-        struct ggml_tensor *Vcur = ggml_mul_mat(ctx0, model.layers[il].c_attn_v_proj_w, cur);
+        struct ggml_tensor *Qcur = ggml_rope(ctx0, ggml_reshape_3d(ctx0, ggml_mul_mat(ctx0, model.layers[il].c_attn_q_proj_w, cur), n_embd / n_head, n_head, N), n_past, n_rot, 0);
+        struct ggml_tensor *Kcur = ggml_rope(ctx0, ggml_reshape_3d(ctx0, ggml_mul_mat(ctx0, model.layers[il].c_attn_k_proj_w, cur), n_embd / n_head, n_head, N), n_past, n_rot, 0);
 
         // store key and value to memory
-        if (N >= 1)
         {
+          struct ggml_tensor *Vcur = ggml_transpose(ctx0, ggml_mul_mat(ctx0, model.layers[il].c_attn_v_proj_w, cur));
+
           struct ggml_tensor *k = ggml_view_1d(ctx0, model.memory_k, N * n_embd, (ggml_element_size(model.memory_k) * n_embd) * (il * n_ctx + n_past));
-          struct ggml_tensor *v = ggml_view_1d(ctx0, model.memory_v, N * n_embd, (ggml_element_size(model.memory_v) * n_embd) * (il * n_ctx + n_past));
+          struct ggml_tensor *v = ggml_view_2d(ctx0, model.memory_v, N, n_embd,
+                                               (n_ctx)*ggml_element_size(model.memory_v),
+                                               (il * n_ctx) * ggml_element_size(model.memory_v) * n_embd + n_past * ggml_element_size(model.memory_v));
 
           ggml_build_forward_expand(&gf, ggml_cpy(ctx0, Kcur, k));
           ggml_build_forward_expand(&gf, ggml_cpy(ctx0, Vcur, v));
@@ -676,21 +705,15 @@ extern "C"
         // Q = Qcur.contiguous().view(n_embd/n_head, n_head, N).permute(0, 2, 1, 3)
         struct ggml_tensor *Q =
             ggml_permute(ctx0,
-                         ggml_rope(ctx0,
-                                   ggml_cpy(ctx0,
-                                            Qcur,
-                                            ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd / n_head, n_head, N)),
-                                   n_past, n_rot, 0),
+                         Qcur,
                          0, 2, 1, 3);
 
         // K = Kmem.view(n_embd/n_head, n_head, n_past + N).permute(0, 2, 1, 3)
         struct ggml_tensor *K =
             ggml_permute(ctx0,
-                         ggml_rope(ctx0,
-                                   ggml_reshape_3d(ctx0,
-                                                   ggml_view_1d(ctx0, model.memory_k, (n_past + N) * n_embd, il * n_ctx * ggml_element_size(model.memory_k) * n_embd),
-                                                   n_embd / n_head, n_head, n_past + N),
-                                   n_past, n_rot, 1),
+                         ggml_reshape_3d(ctx0,
+                                         ggml_view_1d(ctx0, model.memory_k, (n_past + N) * n_embd, il * n_ctx * ggml_element_size(model.memory_k) * n_embd),
+                                         n_embd / n_head, n_head, n_past + N),
                          0, 2, 1, 3);
 
         // K * Q
@@ -709,17 +732,15 @@ extern "C"
         struct ggml_tensor *KQ_soft_max = ggml_soft_max(ctx0, KQ_masked);
 
         // V_trans = Vmem.view(n_embd/n_head, n_head, n_past + N).permute(1, 2, 0, 3).contiguous()
-        struct ggml_tensor *V_trans =
-            ggml_cpy(ctx0,
-                     ggml_permute(ctx0,
-                                  ggml_reshape_3d(ctx0,
-                                                  ggml_view_1d(ctx0, model.memory_v, (n_past + N) * n_embd, il * n_ctx * ggml_element_size(model.memory_v) * n_embd),
-                                                  n_embd / n_head, n_head, n_past + N),
-                                  1, 2, 0, 3),
-                     ggml_new_tensor_3d(ctx0, model.memory_v->type, n_past + N, n_embd / n_head, n_head));
+        struct ggml_tensor *V =
+            ggml_view_3d(ctx0, model.memory_v,
+                         n_past + N, n_embd / n_head, n_head,
+                         n_ctx * ggml_element_size(model.memory_v),
+                         n_ctx * ggml_element_size(model.memory_v) * n_embd / n_head,
+                         il * n_ctx * ggml_element_size(model.memory_v) * n_embd);
 
         // KQV = transpose(V) * KQ_soft_max
-        struct ggml_tensor *KQV = ggml_mul_mat(ctx0, V_trans, KQ_soft_max);
+        struct ggml_tensor *KQV = ggml_mul_mat(ctx0, V, KQ_soft_max);
 
         // KQV_merged = KQV.permute(0, 2, 1, 3)
         struct ggml_tensor *KQV_merged = ggml_permute(ctx0, KQV, 0, 2, 1, 3);
