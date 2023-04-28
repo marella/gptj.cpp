@@ -1,17 +1,15 @@
 #include "ggml/ggml.h"
 
-#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <random>
+#include <regex>
 #include <string>
 #include <vector>
-#include <iostream>
-#include <random>
 #include <thread>
-#include <regex>
 
 #ifdef __cplusplus
 extern "C"
