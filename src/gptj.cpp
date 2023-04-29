@@ -205,7 +205,6 @@ extern "C"
     GGML_FTYPE_MOSTLY_Q4_1 = 3,          // except 1d tensors
     GGML_FTYPE_MOSTLY_Q4_1_SOME_F16 = 4, // tok_embeddings.weight and output.weight are F16
     GGML_FTYPE_MOSTLY_Q4_2 = 5,          // except 1d tensors
-    GGML_FTYPE_MOSTLY_Q4_3 = 6,          // except 1d tensors
     GGML_FTYPE_MOSTLY_Q8_0 = 7,          // except 1d tensors
     GGML_FTYPE_MOSTLY_Q5_0 = 8,          // except 1d tensors
     GGML_FTYPE_MOSTLY_Q5_1 = 9,          // except 1d tensors
@@ -231,9 +230,6 @@ extern "C"
       break;
     case GGML_FTYPE_MOSTLY_Q4_2:
       wtype = GGML_TYPE_Q4_2;
-      break;
-    case GGML_FTYPE_MOSTLY_Q4_3:
-      wtype = GGML_TYPE_Q4_3;
       break;
     case GGML_FTYPE_MOSTLY_Q5_0:
       wtype = GGML_TYPE_Q5_0;
