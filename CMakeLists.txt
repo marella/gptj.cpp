@@ -22,9 +22,9 @@ else()
     set(GGML_STANDALONE OFF)
 endif()
 
-# options
+set(GPTJ_INSTRUCTIONS "avx2" CACHE STRING "gptj: avx2 | avx | basic")
 
-option(GPTJ_AVX2                    "gptj: enable AVX2" ON)
+# options
 
 option(GGML_ALL_WARNINGS            "ggml: enable all compiler warnings"                   ON)
 option(GGML_ALL_WARNINGS_3RD_PARTY  "ggml: enable all compiler warnings in 3rd party libs" OFF)
