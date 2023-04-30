@@ -3,11 +3,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <queue>
 #include <fstream>
 #include <map>
 #include <random>
 #include <regex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <thread>
 
@@ -30,6 +32,8 @@ extern "C"
     int32_t top_k = 40;
     float top_p = 0.9f;
     float temp = 0.9f;
+    float repeat_penalty = 1.0f; // 1.0 = disabled
+    int32_t repeat_last_n = 64;  // last n tokens to penalize (0 = disable penalty, -1 = context size)
 
     int32_t n_batch = 8; // batch size for prompt processing
   };
@@ -111,13 +115,88 @@ extern "C"
     return tokens;
   }
 
+  // Uses a sliding window to keep track of the last n tokens.
+  class GptjRepeatPenalizer
+  {
+  public:
+    GptjRepeatPenalizer(const float repeat_penalty, const int32_t repeat_last_n)
+        : repeat_penalty_(repeat_penalty),
+          repeat_last_n_(repeat_last_n) {}
+
+    // Adds token to the sliding window.
+    void AddToken(const gpt_vocab::id token)
+    {
+      if (IsDisabled())
+      {
+        return;
+      }
+
+      tokens_.push(token);
+      ++token_counts_[token];
+
+      // Remove the least recent token if the sliding window exceeds the max length.
+      if (tokens_.size() > repeat_last_n_)
+      {
+        const gpt_vocab::id front = tokens_.front();
+        tokens_.pop();
+        if (--token_counts_[front] == 0)
+        {
+          token_counts_.erase(front);
+        }
+      }
+    }
+
+    // Applies penalty to all tokens in the sliding window.
+    void ApplyPenalty(std::vector<std::pair<double, gpt_vocab::id>> &logits_id) const
+    {
+      if (IsDisabled())
+      {
+        return;
+      }
+
+      for (const auto &[token, count] : token_counts_)
+      {
+        // See https://github.com/ggerganov/llama.cpp/blob/3e5aa8a1c44051153d6d7b3eeca2f4b4e5fb310c/llama.cpp#L1690-L1717
+        // See https://github.com/ggerganov/llama.cpp/blob/3e5aa8a1c44051153d6d7b3eeca2f4b4e5fb310c/examples/main/main.cpp#L432-L434
+        double &logit = logits_id[token].first;
+        if (logit <= 0)
+        {
+          logit *= repeat_penalty_;
+        }
+        else
+        {
+          logit /= repeat_penalty_;
+        }
+      }
+    }
+
+  private:
+    // Penalty to apply for tokens in the sliding window.
+    const float repeat_penalty_;
+
+    // Max length of the sliding window.
+    const int32_t repeat_last_n_;
+
+    // List of tokens in the sliding window.
+    std::queue<gpt_vocab::id> tokens_;
+
+    // Unique tokens and their counts in the sliding window.
+    std::unordered_map<gpt_vocab::id, int32_t> token_counts_;
+
+    bool IsDisabled() const
+    {
+      return repeat_penalty_ == 1.0f || repeat_last_n_ == 0;
+    }
+  };
+
   gpt_vocab::id gpt_sample_top_k_top_p(
       const gpt_vocab &vocab,
       const float *logits,
       int top_k,
       double top_p,
       double temp,
-      std::mt19937 &rng)
+      std::mt19937 &rng,
+      GptjRepeatPenalizer repeat_penalizer)
   {
     int n_logits = vocab.id_to_token.size();
 
@@ -131,6 +210,8 @@ extern "C"
         logits_id.push_back(std::make_pair(logits[i] * scale, i));
       }
     }
+
+    repeat_penalizer.ApplyPenalty(logits_id);
 
     // find the top K tokens
     std::partial_sort(
@@ -881,9 +962,15 @@ extern "C"
     gpt_vocab &vocab = model_ctx->vocab;
     gptj_model &model = model_ctx->model;
 
+    if (params.repeat_last_n < 0)
+    {
+      params.repeat_last_n = model.hparams.n_ctx;
+    }
+
     int n_past = 0;
 
     std::vector<float> logits;
+    GptjRepeatPenalizer repeat_penalizer(params.repeat_penalty, params.repeat_last_n);
 
     // tokenize the prompt
     std::vector<gpt_vocab::id> embd_inp = ::gpt_tokenize(vocab, prompt);
@@ -925,7 +1012,7 @@ extern "C"
         gpt_vocab::id id = 0;
 
         {
-          id = gpt_sample_top_k_top_p(vocab, logits.data() + (logits.size() - n_vocab), top_k, top_p, temp, rng);
+          id = gpt_sample_top_k_top_p(vocab, logits.data() + (logits.size() - n_vocab), top_k, top_p, temp, rng, repeat_penalizer);
         }
 
         // add it to the context
@@ -945,9 +1032,10 @@ extern "C"
         i += embd.size() - 1;
       }
 
-      if (!processing_input)
+      for (auto id : embd)
       {
-        for (auto id : embd)
+        repeat_penalizer.AddToken(id);
+        if (!processing_input)
         {
           if (id == /* end of text token */ 50256 || !(*callback)(vocab.id_to_token[id].c_str()))
           {
