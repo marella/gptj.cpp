@@ -43,6 +43,11 @@ struct gpt_vocab {
 
   std::map<token, id> token_to_id;
   std::map<id, token> id_to_token;
+  std::vector<std::string> special_tokens;
+
+  void add_special_token(const std::string &token) {
+    special_tokens.push_back(token);
+  }
 };
 
 std::vector<gpt_vocab::id> gpt_tokenize(const gpt_vocab &vocab,
@@ -54,6 +59,20 @@ std::vector<gpt_vocab::id> gpt_tokenize(const gpt_vocab &vocab,
     std::string str = text;
     std::string pat =
         R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)";
+
+    // Generate the subpattern from the special_tokens vector if it's not empty
+    if (!vocab.special_tokens.empty()) {
+      std::string special_tokens_subpattern;
+      for (const auto &token : vocab.special_tokens) {
+        if (!special_tokens_subpattern.empty()) {
+          special_tokens_subpattern += "|";
+        }
+        special_tokens_subpattern += token;
+      }
+
+      // Modify the regex pattern with the generated special tokens subpattern
+      pat = special_tokens_subpattern + "|" + pat;
+    }
 
     std::regex re(pat);
     std::smatch m;
@@ -237,64 +256,6 @@ gpt_vocab::id gpt_sample_top_k_top_p(const gpt_vocab &vocab,
   int idx = dist(rng);
 
   return logits_id[idx].second;
-}
-
-// model file types
-enum ggml_ftype {
-  GGML_FTYPE_UNKNOWN = -1,
-  GGML_FTYPE_ALL_F32 = 0,
-  GGML_FTYPE_MOSTLY_F16 = 1,   // except 1d tensors
-  GGML_FTYPE_MOSTLY_Q4_0 = 2,  // except 1d tensors
-  GGML_FTYPE_MOSTLY_Q4_1 = 3,  // except 1d tensors
-  // tok_embeddings.weight and output.weight are F16
-  GGML_FTYPE_MOSTLY_Q4_1_SOME_F16 = 4,
-  GGML_FTYPE_MOSTLY_Q4_2 = 5,  // except 1d tensors
-  GGML_FTYPE_MOSTLY_Q8_0 = 7,  // except 1d tensors
-  GGML_FTYPE_MOSTLY_Q5_0 = 8,  // except 1d tensors
-  GGML_FTYPE_MOSTLY_Q5_1 = 9,  // except 1d tensors
-};
-
-enum ggml_type ggml_ftype_to_ggml_type(const enum ggml_ftype ftype) {
-  ggml_type wtype = GGML_TYPE_COUNT;
-
-  switch (ftype) {
-    case GGML_FTYPE_ALL_F32:
-      wtype = GGML_TYPE_F32;
-      break;
-    case GGML_FTYPE_MOSTLY_F16:
-      wtype = GGML_TYPE_F16;
-      break;
-    case GGML_FTYPE_MOSTLY_Q4_0:
-      wtype = GGML_TYPE_Q4_0;
-      break;
-    case GGML_FTYPE_MOSTLY_Q4_1:
-      wtype = GGML_TYPE_Q4_1;
-      break;
-    case GGML_FTYPE_MOSTLY_Q4_2:
-      wtype = GGML_TYPE_Q4_2;
-      break;
-    case GGML_FTYPE_MOSTLY_Q5_0:
-      wtype = GGML_TYPE_Q5_0;
-      break;
-    case GGML_FTYPE_MOSTLY_Q5_1:
-      wtype = GGML_TYPE_Q5_1;
-      break;
-    case GGML_FTYPE_MOSTLY_Q8_0:
-      wtype = GGML_TYPE_Q8_0;
-      break;
-    case GGML_FTYPE_UNKNOWN:
-      wtype = GGML_TYPE_COUNT;
-      break;
-    case GGML_FTYPE_MOSTLY_Q4_1_SOME_F16:
-      wtype = GGML_TYPE_COUNT;
-      break;
-  }
-
-  if (wtype == GGML_TYPE_COUNT) {
-    fprintf(stderr, "%s: invalid model type %d\n", __func__, ftype);
-  }
-
-  return wtype;
 }
 
 /**
