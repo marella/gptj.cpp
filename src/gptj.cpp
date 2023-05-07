@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ggml/ggml.h"
@@ -121,74 +122,10 @@ std::vector<gpt_vocab::id> gpt_tokenize(const gpt_vocab &vocab,
   return tokens;
 }
 
-// Uses a sliding window to keep track of the last n tokens.
-class GptjRepeatPenalizer {
- public:
-  GptjRepeatPenalizer(const float repeat_penalty, const int32_t repeat_last_n)
-      : repeat_penalty_(repeat_penalty), repeat_last_n_(repeat_last_n) {}
-
-  // Adds token to the sliding window.
-  void AddToken(const gpt_vocab::id token) {
-    if (IsDisabled()) {
-      return;
-    }
-
-    tokens_.push(token);
-    ++token_counts_[token];
-
-    // Remove the least recent token if the sliding window exceeds the max
-    // length.
-    if (tokens_.size() > repeat_last_n_) {
-      const gpt_vocab::id front = tokens_.front();
-      tokens_.pop();
-      if (--token_counts_[front] == 0) {
-        token_counts_.erase(front);
-      }
-    }
-  }
-
-  // Applies penalty to all tokens in the sliding window.
-  void ApplyPenalty(
-      std::vector<std::pair<double, gpt_vocab::id>> &logits_id) const {
-    if (IsDisabled()) {
-      return;
-    }
-
-    for (const auto &[token, count] : token_counts_) {
-      // https://github.com/ggerganov/llama.cpp/blob/3e5aa8a1c44051153d6d7b3eeca2f4b4e5fb310c/llama.cpp#L1690-L1717
-      // https://github.com/ggerganov/llama.cpp/blob/3e5aa8a1c44051153d6d7b3eeca2f4b4e5fb310c/examples/main/main.cpp#L432-L434
-      double &logit = logits_id[token].first;
-      if (logit <= 0) {
-        logit *= repeat_penalty_;
-      } else {
-        logit /= repeat_penalty_;
-      }
-    }
-  }
-
- private:
-  // Penalty to apply for tokens in the sliding window.
-  const float repeat_penalty_;
-
-  // Max length of the sliding window.
-  const int32_t repeat_last_n_;
-
-  // List of tokens in the sliding window.
-  std::queue<gpt_vocab::id> tokens_;
-
-  // Unique tokens and their counts in the sliding window.
-  std::unordered_map<gpt_vocab::id, int32_t> token_counts_;
-
-  bool IsDisabled() const {
-    return repeat_penalty_ == 1.0f || repeat_last_n_ == 0;
-  }
-};
-
-gpt_vocab::id gpt_sample_top_k_top_p(const gpt_vocab &vocab,
-                                     const float *logits, int top_k,
-                                     double top_p, double temp,
-                                     std::mt19937 &rng,
-                                     GptjRepeatPenalizer repeat_penalizer) {
+gpt_vocab::id gpt_sample_top_k_top_p(
+    const gpt_vocab &vocab, const float *logits, int top_k, double top_p,
+    double temp, const float repeat_penalty,
+    const std::unordered_set<gpt_vocab::id> &recent_tokens, std::mt19937 &rng) {
   int n_logits = vocab.id_to_token.size();
 
   std::vector<std::pair<double, gpt_vocab::id>> logits_id;
@@ -201,7 +138,16 @@ gpt_vocab::id gpt_sample_top_k_top_p(const gpt_vocab &vocab,
     }
   }
 
-  repeat_penalizer.ApplyPenalty(logits_id);
+  for (const gpt_vocab::id token : recent_tokens) {
+    // https://github.com/ggerganov/llama.cpp/blob/3e5aa8a1c44051153d6d7b3eeca2f4b4e5fb310c/llama.cpp#L1690-L1717
+    // https://github.com/ggerganov/llama.cpp/blob/3e5aa8a1c44051153d6d7b3eeca2f4b4e5fb310c/examples/main/main.cpp#L432-L434
+    double &logit = logits_id[token].first;
+    if (logit <= 0) {
+      logit *= repeat_penalty;
+    } else {
+      logit /= repeat_penalty;
+    }
+  }
 
   // find the top K tokens
   std::partial_sort(logits_id.begin(), logits_id.begin() + top_k,
@@ -848,6 +794,54 @@ bool gptj_eval(const gptj_model &model, const int n_threads, const int n_past,
   return true;
 }
 
+// https://github.com/marella/train/blob/3c4ba1f59bf20e31f7ee5ea9a8f38e49440a93f7/train/state.py#L135-L175
+class GptjRingBuffer {
+ public:
+  void Init(const int capacity) {
+    capacity_ = capacity;
+    Clear();
+  }
+
+  void Add(const gpt_vocab::id token) {
+    if (tokens_.size() < capacity_) {
+      tokens_.push_back(token);
+    } else {
+      tokens_[pos_] = token;
+    }
+    pos_ = (pos_ + 1) % capacity_;
+  }
+
+  // Returns last n tokens.
+  std::unordered_set<gpt_vocab::id> GetRecent(int n) const {
+    const int size = Size();
+    n = std::min(size, n);
+    std::unordered_set<gpt_vocab::id> result;
+    if (n == 0) {
+      return result;
+    }
+    const int start = (pos_ - n + size) % size;
+    if (start < pos_) {
+      result.insert(tokens_.begin() + start, tokens_.begin() + pos_);
+    } else {
+      result.insert(tokens_.begin() + start, tokens_.end());
+      result.insert(tokens_.begin(), tokens_.begin() + pos_);
+    }
+    return result;
+  }
+
+  void Clear() {
+    tokens_.clear();
+    pos_ = 0;
+  }
+
+  int Size() const { return tokens_.size(); }
+
+ private:
+  int capacity_;
+  std::vector<gpt_vocab::id> tokens_;
+  int pos_ = 0;
+};
+
 /**
  * API
  */
@@ -855,6 +849,10 @@ bool gptj_eval(const gptj_model &model, const int n_threads, const int n_past,
 struct gptj_model_context {
   gpt_vocab vocab;
   gptj_model model;
+  size_t mem_per_token = 0;
+  GptjRingBuffer previous_tokens;
+
+  void Reset() { previous_tokens.Clear(); }
 };
 
 gptj_model_context *gptj_load_model(const char *filename) {
@@ -863,6 +861,7 @@ gptj_model_context *gptj_load_model(const char *filename) {
     delete ctx;
     return nullptr;
   }
+  ctx->previous_tokens.Init(ctx->model.hparams.n_ctx);
   return ctx;
 }
 
@@ -872,7 +871,11 @@ void gptj_free_model(gptj_model_context *ctx) {
 }
 
 bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
-                   gptj_params params, bool (*callback)(const char *token)) {
+                   gptj_params params, const bool reset,
+                   bool (*callback)(const char *token)) {
+  if (reset) {
+    model_ctx->Reset();
+  }
   if (params.seed < 0) {
     params.seed = time(NULL);
   }
@@ -885,33 +888,37 @@ bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
 
   gpt_vocab &vocab = model_ctx->vocab;
   gptj_model &model = model_ctx->model;
+  size_t &mem_per_token = model_ctx->mem_per_token;
+  GptjRingBuffer &previous_tokens = model_ctx->previous_tokens;
+  const int32_t n_ctx = model.hparams.n_ctx;
 
   if (params.repeat_last_n < 0) {
-    params.repeat_last_n = model.hparams.n_ctx;
+    params.repeat_last_n = n_ctx;
   }
+  params.repeat_last_n = std::min(n_ctx, params.repeat_last_n);
+  const bool repeat_penalty_enabled =
+      !(params.repeat_penalty == 1.0f || params.repeat_last_n == 0);
 
-  int n_past = 0;
-
+  int n_past = previous_tokens.Size();
   std::vector<float> logits;
-  GptjRepeatPenalizer repeat_penalizer(params.repeat_penalty,
-                                       params.repeat_last_n);
 
   // tokenize the prompt
   std::vector<gpt_vocab::id> embd_inp = ::gpt_tokenize(vocab, prompt);
 
-  params.n_predict =
-      std::min(params.n_predict, model.hparams.n_ctx - (int)embd_inp.size());
+  params.n_predict = std::min(n_ctx - (int)embd_inp.size(), params.n_predict);
 
   std::vector<gpt_vocab::id> embd;
 
   // determine the required inference memory per token:
-  size_t mem_per_token = 0;
-  gptj_eval(model, params.n_threads, 0, {0, 1, 2, 3}, logits, mem_per_token);
+  if (mem_per_token == 0) {
+    gptj_eval(model, params.n_threads, 0, {0, 1, 2, 3}, logits, mem_per_token);
+  }
 
   bool processing_input = true;
   for (int i = embd.size(); i < embd_inp.size() + params.n_predict; i++) {
     // predict
     if (embd.size() > 0) {
+      n_past = std::min(n_ctx - (int)embd.size(), n_past);
       if (!gptj_eval(model, params.n_threads, n_past, embd, logits,
                      mem_per_token)) {
         fprintf(stderr, "%s: failed to predict\n", __func__);
@@ -928,15 +935,20 @@ bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
       const int top_k = params.top_k;
       const float top_p = params.top_p;
       const float temp = params.temp;
+      const float repeat_penalty = params.repeat_penalty;
+      std::unordered_set<gpt_vocab::id> recent_tokens;
+      if (repeat_penalty_enabled) {
+        recent_tokens = previous_tokens.GetRecent(params.repeat_last_n);
+      }
 
       const int n_vocab = model.hparams.n_vocab;
 
       gpt_vocab::id id = 0;
 
       {
-        id = gpt_sample_top_k_top_p(vocab,
-                                    logits.data() + (logits.size() - n_vocab),
-                                    top_k, top_p, temp, rng, repeat_penalizer);
+        id = gpt_sample_top_k_top_p(
+            vocab, logits.data() + (logits.size() - n_vocab), top_k, top_p,
+            temp, repeat_penalty, recent_tokens, rng);
       }
 
       // add it to the context
@@ -953,7 +965,7 @@ bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
     }
 
     for (auto id : embd) {
-      repeat_penalizer.AddToken(id);
+      previous_tokens.Add(id);
       if (!processing_input) {
         if (id == /* end of text token */ 50256 ||
             !(*callback)(vocab.id_to_token[id].c_str())) {
