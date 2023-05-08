@@ -850,6 +850,7 @@ struct gptj_model_context {
   gpt_vocab vocab;
   gptj_model model;
   size_t mem_per_token = 0;
+  std::vector<float> logits;
   GptjRingBuffer previous_tokens;
 
   void Reset() { previous_tokens.Clear(); }
@@ -889,6 +890,7 @@ bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
   gpt_vocab &vocab = model_ctx->vocab;
   gptj_model &model = model_ctx->model;
   size_t &mem_per_token = model_ctx->mem_per_token;
+  std::vector<float> &logits = model_ctx->logits;
   GptjRingBuffer &previous_tokens = model_ctx->previous_tokens;
   const int32_t n_ctx = model.hparams.n_ctx;
 
@@ -900,7 +902,11 @@ bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
       !(params.repeat_penalty == 1.0f || params.repeat_last_n == 0);
 
   int n_past = previous_tokens.Size();
-  std::vector<float> logits;
+
+  // Handle empty prompt.
+  if (n_past == 0 && std::strlen(prompt) == 0) {
+    return true;
+  }
 
   // tokenize the prompt
   std::vector<gpt_vocab::id> embd_inp = ::gpt_tokenize(vocab, prompt);
@@ -908,11 +914,6 @@ bool gptj_generate(gptj_model_context *model_ctx, const char *prompt,
   params.n_predict = std::min(n_ctx - (int)embd_inp.size(), params.n_predict);
 
   std::vector<gpt_vocab::id> embd;
-
-  // determine the required inference memory per token:
-  if (mem_per_token == 0) {
-    gptj_eval(model, params.n_threads, 0, {0, 1, 2, 3}, logits, mem_per_token);
-  }
 
   bool processing_input = true;
   for (int i = embd.size(); i < embd_inp.size() + params.n_predict; i++) {
